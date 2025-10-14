@@ -89,6 +89,78 @@ def engineer_d2(d2: pd.DataFrame) -> pd.DataFrame:
     return d2
 
 
+# ---------- EDA ----------
+def eda_plots(d1: pd.DataFrame, d2: pd.DataFrame) -> List[str]:
+    figs = []
+    # Heatmaps 
+    for df, name, title in [(d1,"eda_d1_corr.png","Correlation Heatmap – dataset1"),
+                            (d2,"eda_d2_corr.png","Correlation Heatmap – dataset2")]:
+        num = df.select_dtypes(include=["number"]).dropna(axis=1, how="all")
+        if num.shape[1] >= 2:
+            C = num.corr()
+            plt.figure(figsize=(7,5)); 
+            sns.heatmap(C, annot=True, fmt=".2f", cmap="coolwarm", vmin=-1, vmax=1,cbar=True, square=True, linewidths=0.3)
+            
+            plt.xticks(range(len(C.columns)), C.columns, rotation=90, fontsize=8)
+            plt.yticks(range(len(C.columns)), C.columns, fontsize=8)
+            plt.title(title); plt.tight_layout();savefig(name); figs.append(name)
+
+    # Key relationships
+    if {"rat_minutes","bat_landing_number","season"}.issubset(d2.columns):
+        plt.figure(figsize=(6,4))
+        for g, dfg in d2.groupby(d2["season"].astype(str)):
+            plt.scatter(pd.to_numeric(dfg["rat_minutes"], errors="coerce"),
+                        pd.to_numeric(dfg["bat_landing_number"], errors="coerce"),
+                        label=g, alpha=0.7)
+        plt.legend(title="season", fontsize=8)
+        plt.xlabel("rat_minutes"); plt.ylabel("bat_landing_number")
+        plt.title("Bat Landing Number vs Rat Minutes (by Season)")
+        savefig("eda_scatter_ratmin_batlanding.png"); figs.append("eda_scatter_ratmin_batlanding.png")
+
+    if {"bat_landing_to_food","rat_recency_bucket"}.issubset(d1.columns):
+        cats = d1["rat_recency_bucket"].astype(str).unique().tolist()
+        data = [pd.to_numeric(d1[d1["rat_recency_bucket"].astype(str)==c]["bat_landing_to_food"], errors="coerce").values
+                for c in cats]
+        plt.figure(figsize=(6,4)); plt.boxplot(data, tick_labels=cats)
+        plt.title("Behaviour proxy vs Rat Recency (dataset1)")
+        plt.xlabel("rat_recency_bucket"); plt.ylabel("bat_landing_to_food")
+        savefig("eda_box_bltf_by_recency.png"); figs.append("eda_box_bltf_by_recency.png")
+
+    return figs
+# ---------------------------------------------------
+# PREPROCESSING PIPELINE (scaler + one-hot encoding)
+# ---------------------------------------------------
+# - Numeric features are StandardScaled for stable, comparable coefficients.
+# - Categorical features are one-hot encoded with handle_unknown="ignore"
+#   so the model remains robust if unseen categories appear in the test split.
+# - This ColumnTransformer is used inside a sklearn Pipeline to avoid leakage
+#   and guarantee identical transforms at train and test time.
+# ---------- Modelling ----------
+def prep_features(df: pd.DataFrame, y_col: str, poly=False, interactions=False):
+    y = pd.to_numeric(df[y_col], errors="coerce").astype(float)
+    X = df.drop(columns=[y_col]).copy()
+    prefer = ["rat_minutes","rat_arrival_number","hours_after_sunset","food_availability",
+              "bat_landing_number","seconds_after_rat_arrival","near_rat_window",
+              "landing_per_rat_min","hour_bin","season","rat_recency_bucket"]
+    cols = [c for c in prefer if c in X.columns]
+    X = X[cols]
+    num_cols = X.select_dtypes(include=["number"]).columns.tolist()
+    cat_cols = X.select_dtypes(exclude=["number"]).columns.tolist()
+    from sklearn.pipeline import Pipeline as SkPipe
+    steps = []
+    #if poly: steps.append(("poly", PolynomialFeatures(degree=2, include_bias=False)))
+    steps.append(("sc", StandardScaler()))
+    transformers = []
+    if interactions and not poly:
+        if num_cols:
+            transformers.append(("num", SkPipe([("poly", PolynomialFeatures(degree=2, include_bias=False, interaction_only=True)),
+                                                ("sc", StandardScaler())]), num_cols))
+        if cat_cols: transformers.append(("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols))
+    else:
+        if num_cols: transformers.append(("num", SkPipe(steps), num_cols))
+        if cat_cols: transformers.append(("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols))
+    pre = ColumnTransformer(transformers, remainder="drop")
+    return X, y, pre
 
 
 
@@ -98,14 +170,9 @@ def main():
     d1 = engineer_d1(d1); d2 = engineer_d2(d2)
 
     eda_figs = eda_plots(d1, d2)
-    A = run_investigation_A(d1)
-    B = run_investigation_B(d2)
+    #A = run_investigation_A(d1)
+    #B = run_investigation_B(d2)
 
-    out_path = os.path.join(REPORT_DIR, "results_summary.json")
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump({"eda_figs": eda_figs, "A": A, "B": B}, f, indent=2)
-    print("Saved:", out_path)
-    print("Figures:", eda_figs)
 
 if __name__ == "__main__":
     main()
