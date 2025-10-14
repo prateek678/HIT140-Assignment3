@@ -162,7 +162,45 @@ def prep_features(df: pd.DataFrame, y_col: str, poly=False, interactions=False):
     pre = ColumnTransformer(transformers, remainder="drop")
     return X, y, pre
 
+def residual_plots(y_true, y_pred, tag):
+    res = y_true - y_pred
+    plt.figure(figsize=(6,4)); plt.scatter(y_pred, res, alpha=0.7); plt.axhline(0, linestyle="--")
+    plt.xlabel("Predicted"); plt.ylabel("Residuals"); plt.title(f"Residuals vs Predicted – {tag}")
+    savefig(f"diag_residuals_{tag}.png")
+    plt.figure(figsize=(6,4)); plt.hist(res, bins=30); plt.title(f"Residual Distribution – {tag}")
+    savefig(f"diag_residual_hist_{tag}.png")
 
+def feature_names_after(pre: ColumnTransformer) -> List[str]:
+    names = []
+    for name, trans, cols in pre.transformers_:
+        if hasattr(trans, "get_feature_names_out"):
+            try: fn = trans.get_feature_names_out(cols)
+            except Exception: fn = cols
+            names.extend(list(fn))
+        else:
+            names.extend(list(cols) if isinstance(cols, (list,tuple)) else [cols])
+    return names
+
+def fit_and_report(model, X, y, pre, tag: str) -> Dict:
+    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=TEST_SIZE, random_state=RANDOM_SEED)
+    from sklearn.pipeline import Pipeline as SkPipe
+    pipe = SkPipe([("pre", pre), ("mdl", model)])
+    cv = cross_val_score(pipe, Xtr, ytr, cv=CV_FOLDS, scoring="neg_mean_squared_error")
+    pipe.fit(Xtr, ytr); yhat = pipe.predict(Xte)
+    mse = mean_squared_error(yte, yhat); rmse = mse ** 0.5; r2 = r2_score(yte, yhat)
+    cv_rmse = float(((-cv)**0.5).mean())
+    residual_plots(yte, yhat, tag)
+
+    coef_csv = None
+    if hasattr(pipe.named_steps["mdl"], "coef_"):
+        names = feature_names_after(pipe.named_steps["pre"])
+        coefs = pd.Series(pipe.named_steps["mdl"].coef_.ravel(), index=names)\
+                    .sort_values(key=lambda s: s.abs(), ascending=False).reset_index()
+        coefs.columns = ["feature","coefficient"]
+        coef_csv = save_table(coefs, f"coef_{tag}.csv")
+
+    return {"model": tag, "MAE": float(mean_absolute_error(yte, yhat)),
+            "RMSE": float(rmse), "R2": float(r2), "CV_RMSE_mean": cv_rmse, "coef_csv": coef_csv}
 
 def main():
     d1, d2 = load_data()
